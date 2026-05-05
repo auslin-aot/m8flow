@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from flask import g, has_request_context
-from sqlalchemy import event
+from sqlalchemy import event, tuple_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import with_loader_criteria
 
@@ -18,6 +18,7 @@ from m8flow_backend.tenancy import (
     allow_missing_tenant_context,
     get_context_tenant_id,
     get_tenant_id,
+    is_super_admin_request,
     is_tenant_context_exempt_request,
 )
 
@@ -267,9 +268,26 @@ def _patch_reference_cache_basic_query() -> None:
     if "reference_cache_basic_query" in _ORIGINALS:
         return
 
-    _ORIGINALS["reference_cache_basic_query"] = ReferenceCacheModel.basic_query
+    _ORIGINALS["reference_cache_basic_query"] = ReferenceCacheModel.basic_query.__func__
 
     def patched_basic_query(cls: type) -> Any:
+        if is_super_admin_request():
+            latest_generation_per_tenant = (
+                db.session.query(
+                    ReferenceCacheModel.m8f_tenant_id.label("tenant_id"),  # type: ignore[attr-defined]
+                    db.func.max(ReferenceCacheModel.generation_id).label("max_generation_id"),
+                )
+                .group_by(ReferenceCacheModel.m8f_tenant_id)  # type: ignore[attr-defined]
+                .subquery()
+            )
+            return cls.query.filter(
+                tuple_(cls.m8f_tenant_id, cls.generation_id).in_(  # type: ignore[attr-defined]
+                    db.session.query(
+                        latest_generation_per_tenant.c.tenant_id,
+                        latest_generation_per_tenant.c.max_generation_id,
+                    )
+                )
+            )
         if is_tenant_context_exempt_request():
             return _ORIGINALS["reference_cache_basic_query"](cls)
         tenant_id = get_tenant_id()
@@ -357,9 +375,12 @@ def _resolve_tenant_id_for_db() -> str:
 
 @event.listens_for(Session, "after_begin")  # type: ignore[misc]
 def _set_postgres_tenant_context(session: Session, transaction: Any, connection: Any) -> None:
-    if is_tenant_context_exempt_request():
-        return
     if connection.dialect.name != "postgresql":
+        return
+    if is_super_admin_request():
+        connection.exec_driver_sql("SET LOCAL app.bypass_rls = 'on'")
+        return
+    if is_tenant_context_exempt_request():
         return
 
     # During early request handling (e.g. omni_auth token verification), DB access can happen

@@ -90,6 +90,38 @@ const isPublicUser = () => {
   return false;
 };
 
+const isSuperAdmin = (): boolean => {
+  const idToken = getIdToken();
+  if (!idToken) {
+    return false;
+  }
+  try {
+    const idObject = jwtDecode(idToken) as Record<string, unknown>;
+    const groups = idObject.groups;
+    if (Array.isArray(groups)) {
+      for (const group of groups) {
+        if (typeof group !== 'string') {
+          continue;
+        }
+        const normalized = group.replace(/^\/+|\/+$/g, '').split('/').pop();
+        if (normalized === 'super-admin') {
+          return true;
+        }
+      }
+    }
+    const realmAccess = idObject.realm_access;
+    if (realmAccess && typeof realmAccess === 'object') {
+      const roles = (realmAccess as Record<string, unknown>).roles;
+      if (Array.isArray(roles) && roles.includes('super-admin')) {
+        return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
+};
+
 const doLogin = (
   authenticationOption?: AuthenticationOption,
   redirectUrl?: string | null,
@@ -259,6 +291,7 @@ const UserService = {
   getUserName,
   getTenantId,
   isLoggedIn,
+  isSuperAdmin,
   isPublicUser,
   redirectToLogin,
   setTenantId,

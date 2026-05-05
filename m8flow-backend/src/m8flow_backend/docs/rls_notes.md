@@ -53,6 +53,13 @@ and raises if the tenant is missing. To allow admin/migration workflows without 
 When missing is allowed, the session executes:
   RESET app.current_tenant
 
+Master realm super-admin (global operator)
+- M8Flow supports a Keycloak `master` realm `super-admin` user for cross-tenant operations.
+- For this principal, request-level tenant scoping is bypassed intentionally, so the user can
+  manage and query process models, process instances, and tasks across tenants.
+- Keep this role tightly controlled; it is equivalent to platform-level access.
+- Normal tenant users remain tenant-scoped and continue to require tenant context.
+
 Non-PostgreSQL databases
 MySQL/SQLite rely on ORM filtering only (no DB-level RLS enforcement).
 

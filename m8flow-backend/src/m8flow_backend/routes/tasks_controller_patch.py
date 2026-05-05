@@ -4,8 +4,11 @@ import flask.wrappers
 from flask import current_app
 from flask import jsonify
 from flask import make_response
+from sqlalchemy import desc
+from sqlalchemy import func
 
 from m8flow_backend.services.tenant_identity_helpers import display_group_identifier
+from m8flow_backend.tenancy import is_super_admin_request
 
 _PATCHED = False
 
@@ -65,13 +68,116 @@ def apply(flask_app: object | None = None) -> None:
 
     original_get_tasks = tasks_controller._get_tasks
     original_task_list_my_tasks = tasks_controller.task_list_my_tasks
+    original_task_list_for_me = tasks_controller.task_list_for_me
+    original_task_list_for_my_open_processes = tasks_controller.task_list_for_my_open_processes
+    original_task_list_for_my_groups = tasks_controller.task_list_for_my_groups
     original_task_data_show = getattr(tasks_controller, "task_data_show", None)
+
+    def _task_list_all_open_tasks(*args, **kwargs) -> flask.wrappers.Response:
+        # Compatibility with upstream task-list signatures:
+        # - task_list_my_tasks(process_instance_id=None, page=1, per_page=100)
+        # - task_list_for_me(page=1, per_page=100)
+        page = kwargs.get("page", 1)
+        per_page = kwargs.get("per_page", 100)
+        if len(args) >= 2:
+            page = args[1]
+        elif len(args) >= 1 and "page" not in kwargs:
+            # Covers signatures where first positional arg is page.
+            page = args[0]
+        if len(args) >= 3:
+            per_page = args[2]
+
+        from spiffworkflow_backend.models.group import GroupModel
+        from spiffworkflow_backend.models.human_task import HumanTaskModel
+        from spiffworkflow_backend.models.human_task_user import HumanTaskUserModel
+        from spiffworkflow_backend.models.process_instance import ProcessInstanceModel
+        from spiffworkflow_backend.models.process_instance import ProcessInstanceStatus
+        from spiffworkflow_backend.models.user import UserModel
+        from spiffworkflow_backend.models.db import db
+
+        assigned_user = tasks_controller.aliased(UserModel)
+        human_tasks_query = (
+            db.session.query(HumanTaskModel)
+            .group_by(HumanTaskModel.id)  # type: ignore
+            .outerjoin(GroupModel, GroupModel.id == HumanTaskModel.lane_assignment_id)
+            .join(ProcessInstanceModel)
+            .join(UserModel, UserModel.id == ProcessInstanceModel.process_initiator_id)
+            .outerjoin(HumanTaskUserModel, HumanTaskModel.id == HumanTaskUserModel.human_task_id)
+            .outerjoin(assigned_user, assigned_user.id == HumanTaskUserModel.user_id)
+            .filter(
+                HumanTaskModel.completed == False,  # noqa: E712
+                ProcessInstanceModel.status != ProcessInstanceStatus.error.value,
+            )
+        )
+
+        potential_owner_usernames = tasks_controller._get_potential_owner_usernames(assigned_user)
+
+        process_model_identifier_column = ProcessInstanceModel.process_model_identifier
+        process_instance_status_column = ProcessInstanceModel.status.label("process_instance_status")  # type: ignore
+        user_username_column = UserModel.username.label("process_initiator_username")  # type: ignore
+        group_identifier_column = GroupModel.identifier.label("assigned_user_group_identifier")  # type: ignore
+        lane_name_column = HumanTaskModel.lane_name
+        if current_app.config["SPIFFWORKFLOW_BACKEND_DATABASE_TYPE"] == "postgres":
+            process_model_identifier_column = func.max(ProcessInstanceModel.process_model_identifier).label(
+                "process_model_identifier"
+            )
+            process_instance_status_column = func.max(ProcessInstanceModel.status).label("process_instance_status")
+            user_username_column = func.max(UserModel.username).label("process_initiator_username")
+            group_identifier_column = func.max(GroupModel.identifier).label("assigned_user_group_identifier")
+            lane_name_column = func.max(HumanTaskModel.lane_name).label("lane_name")
+
+        human_tasks = (
+            human_tasks_query.add_columns(
+                process_model_identifier_column,
+                process_instance_status_column,
+                user_username_column,
+                group_identifier_column,
+                HumanTaskModel.task_name,
+                HumanTaskModel.task_title,
+                HumanTaskModel.process_model_display_name,
+                HumanTaskModel.process_instance_id,
+                HumanTaskModel.updated_at_in_seconds,
+                HumanTaskModel.created_at_in_seconds,
+                HumanTaskModel.json_metadata,
+                lane_name_column,
+                potential_owner_usernames,
+            )
+            .order_by(desc(HumanTaskModel.id))  # type: ignore
+            .paginate(page=page, per_page=per_page, error_out=False)
+        )
+
+        response_json = {
+            "results": human_tasks.items,
+            "pagination": {
+                "count": len(human_tasks.items),
+                "total": human_tasks.total,
+                "pages": human_tasks.pages,
+            },
+        }
+        return make_response(jsonify(response_json), 200)
 
     def patched_get_tasks(*args, **kwargs) -> flask.wrappers.Response:
         return _rewrite_assigned_group_identifiers(original_get_tasks(*args, **kwargs))
 
     def patched_task_list_my_tasks(*args, **kwargs) -> flask.wrappers.Response:
+        if is_super_admin_request():
+            return _rewrite_assigned_group_identifiers(_task_list_all_open_tasks(*args, **kwargs))
         return _rewrite_assigned_group_identifiers(original_task_list_my_tasks(*args, **kwargs))
+
+    def patched_task_list_for_me(*args, **kwargs) -> flask.wrappers.Response:
+        if is_super_admin_request():
+            return _rewrite_assigned_group_identifiers(_task_list_all_open_tasks(*args, **kwargs))
+        return _rewrite_assigned_group_identifiers(original_task_list_for_me(*args, **kwargs))
+
+    def patched_task_list_for_my_open_processes(*args, **kwargs) -> flask.wrappers.Response:
+        if is_super_admin_request():
+            return _rewrite_assigned_group_identifiers(_task_list_all_open_tasks(*args, **kwargs))
+        return _rewrite_assigned_group_identifiers(original_task_list_for_my_open_processes(*args, **kwargs))
+
+    def patched_task_list_for_my_groups(*args, **kwargs) -> flask.wrappers.Response:
+        if is_super_admin_request():
+            return _rewrite_assigned_group_identifiers(_task_list_all_open_tasks(*args, **kwargs))
+        return _rewrite_assigned_group_identifiers(original_task_list_for_my_groups(*args, **kwargs))
 
     def patched_task_data_show(
         modified_process_model_identifier: str,
@@ -86,6 +192,9 @@ def apply(flask_app: object | None = None) -> None:
 
     tasks_controller._get_tasks = patched_get_tasks
     tasks_controller.task_list_my_tasks = patched_task_list_my_tasks
+    tasks_controller.task_list_for_me = patched_task_list_for_me
+    tasks_controller.task_list_for_my_open_processes = patched_task_list_for_my_open_processes
+    tasks_controller.task_list_for_my_groups = patched_task_list_for_my_groups
     tasks_controller.task_data_show = patched_task_data_show
 
     for endpoint, view_function in list(app.view_functions.items()):

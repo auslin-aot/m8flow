@@ -52,7 +52,7 @@ permissions:
     uri: /active-users/*
 
 
-  # Super Admins have access to tenants management only.
+  # Super Admins are global operators (master realm) and can manage all tenant resources.
   super-admin:
     groups: ["super-admin"]
     actions: [all]
@@ -62,35 +62,35 @@ permissions:
     actions: [all]
     uri: /m8flow/tenant-realms*
   read-all-process-groups:
-    groups: ["viewer"]
+    groups: ["viewer", "super-admin"]
     actions: [read]
     uri: PG:ALL
   manage-all-process-groups:
-    groups: ["tenant-admin", "editor"]
+    groups: ["tenant-admin", "editor", "super-admin"]
     actions: [all]
     uri: PG:ALL
   read-all-process-models:
-    groups: ["viewer", "reviewer"]
+    groups: ["viewer", "reviewer", "super-admin"]
     actions: [read]
     uri: PM:ALL
   manage-all-process-models:
-    groups: ["tenant-admin", "editor"]
+    groups: ["tenant-admin", "editor", "super-admin"]
     actions: [all]
     uri: PM:ALL
   read-processes:
-    groups: ["tenant-admin", "editor", "viewer", "reviewer"]
+    groups: ["tenant-admin", "editor", "viewer", "reviewer", "super-admin"]
     actions: [read]
     uri: /processes/*
   run-all-process-models:
-    groups: ["tenant-admin", "editor"]
+    groups: ["tenant-admin", "editor", "super-admin"]
     actions: [start]
     uri: PM:ALL
   read-process-instances:
-    groups: ["tenant-admin", "editor", "viewer"]
+    groups: ["tenant-admin", "editor", "viewer", "super-admin"]
     actions: [read]
     uri: /process-instances/*
   read-user-groups-items:
-    groups: ["tenant-admin", "editor", "viewer"]
+    groups: ["tenant-admin", "editor", "viewer", "super-admin"]
     actions: [read]
     uri: /user-groups/*
   read-script-assist-items:
@@ -152,11 +152,11 @@ permissions:
     actions: [read]
     uri: /m8flow/templates/*
   manage-tasks:
-    groups: ["tenant-admin", "editor", "reviewer"]
+    groups: ["tenant-admin", "editor", "reviewer", "super-admin"]
     actions: [all]
     uri: /tasks/*
   read-tasks:
-    groups: ["viewer"]
+    groups: ["viewer", "super-admin"]
     actions: [read]
     uri: /tasks/*
   manage-nats-tokens:
